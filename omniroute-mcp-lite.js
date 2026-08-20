@@ -1,0 +1,231 @@
+#!/usr/bin/env bun
+'use strict';
+
+// omniroute-mcp-lite — a thin, zero-dependency stdio MCP server (run with `bun`).
+//
+// Exposes ONLY OmniRoute's web_search + web_fetch tools and proxies each call
+// to OmniRoute's own MCP server (streamable HTTP). This keeps the agent's
+// context at ~630 tokens instead of OmniRoute's full ~14k-tool catalog.
+//
+// Portable: any MCP-aware client (Claude Code, OpenCode, Cursor, oh-my-pi if
+// MCP-capable, etc.) can launch it as a stdio subprocess — no node_modules,
+// no build step, just `bun omniroute-mcp-lite.js`.
+//
+// Config (environment):
+//   OMNIROUTE_MCP_URL   upstream MCP endpoint (default http://127.0.0.1:20128/api/mcp/stream)
+//   OMNIROUTE_API_KEY   required bearer token for the upstream
+
+const OMNIROUTE_MCP_URL = process.env.OMNIROUTE_MCP_URL || 'http://127.0.0.1:20128/api/mcp/stream';
+const OMNIROUTE_API_KEY = process.env.OMNIROUTE_API_KEY || '';
+
+if (!OMNIROUTE_API_KEY) {
+  process.stderr.write('[omniroute-mcp-lite] WARNING: OMNIROUTE_API_KEY is not set; tool calls will fail.\n');
+}
+
+// Tool definitions lifted verbatim from OmniRoute's live catalog so the agent
+// sees the real schemas and we can forward `arguments` without remapping.
+const TOOLS = [
+  {
+    name: 'omniroute_web_search',
+    description: "Performs web search using OmniRoute's search gateway. Supports multiple providers (Serper, Brave, Perplexity, Exa, Tavily) with automatic failover. Returns search results with titles, URLs, snippets, and position data.",
+    inputSchema: {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 500, description: 'The search query string' },
+        max_results: { default: 5, description: 'Maximum number of search results to return', type: 'integer', minimum: 1, maximum: 20 },
+        search_type: { default: 'web', description: 'Type of search to perform', type: 'string', enum: ['web', 'news'] },
+        provider: { description: 'Specific search provider to use', type: 'string', enum: ['serper-search', 'brave-search', 'perplexity-search', 'exa-search', 'tavily-search', 'firecrawl', 'google-pse-search', 'linkup-search', 'searchapi-search', 'youcom-search', 'searxng-search', 'ollama-search', 'zai-search', 'jina-search', 'duckduckgo-free'] }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'omniroute_web_fetch',
+    description: "Fetches and extracts content from a URL using OmniRoute's web fetch gateway. Supports multiple providers (Firecrawl, Jina Reader, Tavily) with automatic failover. Returns page content as markdown, HTML, links, or screenshot, along with metadata.",
+    inputSchema: {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: {
+        url: { type: 'string', minLength: 1, description: 'The URL to fetch content from' },
+        provider: { description: 'Specific fetch provider to use (default: first available)', type: 'string', enum: ['firecrawl', 'jina-reader', 'tavily-search', 'tinyfish'] },
+        format: { default: 'markdown', description: 'Output format for the fetched content', type: 'string', enum: ['markdown', 'html', 'links', 'screenshot'] },
+        include_metadata: { default: false, description: 'Include page metadata (title, description) in the response', type: 'boolean' },
+        depth: { description: 'Crawl depth for Firecrawl (0 = single page, max 2)', type: 'integer', minimum: 0, maximum: 2 },
+        wait_for_selector: { description: 'CSS selector to wait for before extracting content (Firecrawl only)', type: 'string' }
+      },
+      required: ['url']
+    }
+  }
+];
+
+const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
+
+// ---- Upstream OmniRoute MCP client (streamable HTTP) ----
+let sessionId = null;
+let sessionValid = false;
+
+function authHeaders(extra) {
+  return Object.assign(
+    {
+      Authorization: 'Bearer ' + OMNIROUTE_API_KEY,
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream'
+    },
+    extra || {}
+  );
+}
+
+function parseFramed(text) {
+  if (text.includes('data:')) {
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (t.startsWith('data:')) {
+        try {
+          return JSON.parse(t.slice(5).trim());
+        } catch (_) {
+          /* keep scanning */
+        }
+      }
+    }
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function upstreamInitialize() {
+  const res = await fetch(OMNIROUTE_MCP_URL, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'omniroute-mcp-lite', version: '1.0.0' }
+      }
+    })
+  });
+  const sid = res.headers.get('mcp-session-id');
+  if (sid) sessionId = sid;
+  sessionValid = true;
+  // Notify the server we're initialized so it arms the session.
+  try {
+    await fetch(OMNIROUTE_MCP_URL, {
+      method: 'POST',
+      headers: authHeaders(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
+    });
+  } catch (_) {
+    /* non-fatal */
+  }
+  return sessionId;
+}
+
+async function callUpstream(name, args, attempt) {
+  attempt = attempt || 0;
+  if (!sessionValid) await upstreamInitialize();
+  const res = await fetch(OMNIROUTE_MCP_URL, {
+    method: 'POST',
+    headers: authHeaders(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: Date.now(),
+      method: 'tools/call',
+      params: { name: name, arguments: args || {} }
+    })
+  });
+  const data = await parseFramed(await res.text());
+  const sessionGone = res.status === 404 || (data && data.error && /session/i.test(JSON.stringify(data.error)));
+  if (sessionGone && attempt === 0) {
+    sessionValid = false;
+    return callUpstream(name, args, attempt + 1);
+  }
+  if (!data) throw new Error('Empty response from OmniRoute MCP (HTTP ' + res.status + ')');
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  return data.result;
+}
+
+// ---- stdio MCP server (JSON-RPC, newline-delimited) ----
+function send(msg) {
+  process.stdout.write(JSON.stringify(msg) + '\n');
+}
+
+async function handleRequest(msg) {
+  const id = msg.id;
+  const method = msg.method;
+  const params = msg.params || {};
+
+  switch (method) {
+    case 'initialize':
+      send({
+        jsonrpc: '2.0',
+        id: id,
+        result: {
+          protocolVersion: '2025-03-26',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'omniroute-mcp-lite', version: '1.0.0' }
+        }
+      });
+      return;
+
+    case 'ping':
+      send({ jsonrpc: '2.0', id: id, result: {} });
+      return;
+
+    case 'tools/list':
+      send({ jsonrpc: '2.0', id: id, result: { tools: TOOLS } });
+      return;
+
+    case 'resources/list':
+    case 'prompts/list':
+      send({ jsonrpc: '2.0', id: id, result: { [method === 'resources/list' ? 'resources' : 'prompts']: [] } });
+      return;
+
+    case 'tools/call': {
+      if (!TOOL_NAMES.has(params.name)) {
+        send({ jsonrpc: '2.0', id: id, error: { code: -32602, message: 'Unknown tool: ' + params.name } });
+        return;
+      }
+      try {
+        const result = await callUpstream(params.name, params.arguments);
+        send({ jsonrpc: '2.0', id: id, result: result });
+      } catch (e) {
+        send({ jsonrpc: '2.0', id: id, error: { code: -32603, message: e.message } });
+      }
+      return;
+    }
+
+    default:
+      if (id !== undefined && id !== null) {
+        send({ jsonrpc: '2.0', id: id, error: { code: -32601, message: 'Method not found: ' + method } });
+      }
+      return;
+  }
+}
+
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const t = line.trim();
+  if (!t) return;
+  let msg;
+  try {
+    msg = JSON.parse(t);
+  } catch (_) {
+    return;
+  }
+  if (!msg || typeof msg !== 'object' || !msg.method) return;
+  // Notifications (no id) need no response.
+  if (msg.id === undefined || msg.id === null) return;
+  handleRequest(msg);
+});
+rl.on('close', () => process.exit(0));
+
+process.stderr.write('[omniroute-mcp-lite] stdio MCP server started (tools: ' + TOOLS.map((t) => t.name).join(', ') + ')\n');
