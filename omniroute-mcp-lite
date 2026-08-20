@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-'use strict';
 
 // omniroute-mcp-lite — a thin, zero-dependency stdio MCP server (run with `bun`).
 //
@@ -59,7 +58,6 @@ const TOOLS = [
   }
 ];
 
-const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 // ---- Upstream OmniRoute MCP client (streamable HTTP) ----
 let sessionId = null;
@@ -128,8 +126,7 @@ async function upstreamInitialize() {
   return sessionId;
 }
 
-async function callUpstream(name, args, attempt) {
-  attempt = attempt || 0;
+async function callUpstream(name, args, attempt = 0) {
   if (!sessionValid) await upstreamInitialize();
   const res = await fetch(OMNIROUTE_MCP_URL, {
     method: 'POST',
@@ -189,7 +186,7 @@ async function handleRequest(msg) {
       return;
 
     case 'tools/call': {
-      if (!TOOL_NAMES.has(params.name)) {
+      if (!TOOLS.some((t) => t.name === params.name)) {
         send({ jsonrpc: '2.0', id: id, error: { code: -32602, message: 'Unknown tool: ' + params.name } });
         return;
       }
