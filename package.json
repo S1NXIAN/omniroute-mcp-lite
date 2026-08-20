@@ -5,7 +5,8 @@
   "type": "commonjs",
   "bin": "./omniroute-mcp-lite",
   "files": [
-    "omniroute-mcp-lite"
+    "omniroute-mcp-lite",
+    "README.md"
   ],
   "engines": {
     "node": ">=18"
