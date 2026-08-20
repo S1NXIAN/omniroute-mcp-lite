@@ -17,37 +17,44 @@
 const OMNIROUTE_MCP_URL = process.env.OMNIROUTE_MCP_URL || 'http://127.0.0.1:20128/api/mcp/stream';
 const OMNIROUTE_API_KEY = process.env.OMNIROUTE_API_KEY || '';
 
+// Hard-coded routing defaults — the proxy pins the provider so the agent never
+// has to choose one. Search → Exa (best relevance); fetch → Firecrawl (best
+// extraction). Pinned explicitly, so OmniRoute will NOT fail over to another
+// provider. Change these two lines to re-pin.
+const SEARCH_PROVIDER = 'exa-search';
+const FETCH_PROVIDER = 'firecrawl';
+
 if (!OMNIROUTE_API_KEY) {
   process.stderr.write('[omniroute-mcp-lite] WARNING: OMNIROUTE_API_KEY is not set; tool calls will fail.\n');
 }
 
 // Tool definitions lifted verbatim from OmniRoute's live catalog so the agent
-// sees the real schemas and we can forward `arguments` without remapping.
+// sees the real schemas — except the `provider` field, which is pinned
+// server-side (above) and hidden from the agent to save tokens and keep the
+// decision in one place.
 const TOOLS = [
   {
     name: 'omniroute_web_search',
-    description: "Performs web search using OmniRoute's search gateway. Supports multiple providers (Serper, Brave, Perplexity, Exa, Tavily) with automatic failover. Returns search results with titles, URLs, snippets, and position data.",
+    description: 'Web search via OmniRoute. Returns titles, URLs, and snippets.',
     inputSchema: {
       $schema: 'http://json-schema.org/draft-07/schema#',
       type: 'object',
       properties: {
         query: { type: 'string', minLength: 1, maxLength: 500, description: 'The search query string' },
         max_results: { default: 5, description: 'Maximum number of search results to return', type: 'integer', minimum: 1, maximum: 20 },
-        search_type: { default: 'web', description: 'Type of search to perform', type: 'string', enum: ['web', 'news'] },
-        provider: { description: 'Specific search provider to use', type: 'string', enum: ['serper-search', 'brave-search', 'perplexity-search', 'exa-search', 'tavily-search', 'firecrawl', 'google-pse-search', 'linkup-search', 'searchapi-search', 'youcom-search', 'searxng-search', 'ollama-search', 'zai-search', 'jina-search', 'duckduckgo-free'] }
+        search_type: { default: 'web', description: 'Type of search to perform', type: 'string', enum: ['web', 'news'] }
       },
       required: ['query']
     }
   },
   {
     name: 'omniroute_web_fetch',
-    description: "Fetches and extracts content from a URL using OmniRoute's web fetch gateway. Supports multiple providers (Firecrawl, Jina Reader, Tavily) with automatic failover. Returns page content as markdown, HTML, links, or screenshot, along with metadata.",
+    description: 'Fetch and extract a URL’s content via OmniRoute (markdown/HTML/links/screenshot).',
     inputSchema: {
       $schema: 'http://json-schema.org/draft-07/schema#',
       type: 'object',
       properties: {
         url: { type: 'string', minLength: 1, description: 'The URL to fetch content from' },
-        provider: { description: 'Specific fetch provider to use (default: first available)', type: 'string', enum: ['firecrawl', 'jina-reader', 'tavily-search', 'tinyfish'] },
         format: { default: 'markdown', description: 'Output format for the fetched content', type: 'string', enum: ['markdown', 'html', 'links', 'screenshot'] },
         include_metadata: { default: false, description: 'Include page metadata (title, description) in the response', type: 'boolean' },
         depth: { description: 'Crawl depth for Firecrawl (0 = single page, max 2)', type: 'integer', minimum: 0, maximum: 2 },
@@ -191,7 +198,9 @@ async function handleRequest(msg) {
         return;
       }
       try {
-        const result = await callUpstream(params.name, params.arguments);
+        // Pin the provider server-side (no upstream failover). The agent never
+        // supplies `provider`; it is always injected here from the constants.
+        const result = await callUpstream(params.name, { ...params.arguments, provider: params.name === 'omniroute_web_search' ? SEARCH_PROVIDER : FETCH_PROVIDER });
         send({ jsonrpc: '2.0', id: id, result: result });
       } catch (e) {
         send({ jsonrpc: '2.0', id: id, error: { code: -32603, message: e.message } });
