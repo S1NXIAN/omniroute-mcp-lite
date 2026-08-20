@@ -34,7 +34,7 @@ bloat.
 No build, no `node_modules`. Run it directly:
 
 ```sh
-bunx omniroute-mcp-lite
+bunx omniroute-mcp-lite@latest
 ```
 
 or clone and run the script:
@@ -56,22 +56,15 @@ have `OMNIROUTE_API_KEY` available (exported, or loaded via the harness's `.env`
 ## Register with your agent
 
 The server is plain stdio MCP, so any MCP-aware client can launch it. The command
-is `bunx omniroute-mcp-lite` (or `bun /path/to/omniroute-mcp-lite`).
+is `bunx omniroute-mcp-lite@latest` (or `bun /path/to/omniroute-mcp-lite`).
 
 **OpenCode**
 
 ```sh
-opencode mcp add omniroute-mcp-lite --env OMNIROUTE_API_KEY=$OMNIROUTE_API_KEY -- bunx omniroute-mcp-lite
+opencode mcp add omniroute-mcp-lite --env OMNIROUTE_API_KEY=$OMNIROUTE_API_KEY -- bunx omniroute-mcp-lite@latest
 ```
 
-**oh-my-pi (omp)** — in a session:
-
-```
-/mcp add
-```
-
-pick stdio, name `omniroute-mcp-lite`, command `bunx omniroute-mcp-lite`. Or write
-`~/.omp/agent/mcp.json`:
+**oh-my-pi (omp)** — write `~/.omp/agent/mcp.json`:
 
 ```json
 {
@@ -79,7 +72,7 @@ pick stdio, name `omniroute-mcp-lite`, command `bunx omniroute-mcp-lite`. Or wri
     "omniroute-mcp-lite": {
       "type": "stdio",
       "command": "bunx",
-      "args": ["omniroute-mcp-lite"]
+      "args": ["omniroute-mcp-lite@latest"]
     }
   }
 }
@@ -88,7 +81,7 @@ pick stdio, name `omniroute-mcp-lite`, command `bunx omniroute-mcp-lite`. Or wri
 **Claude Code**
 
 ```sh
-claude mcp add omniroute-mcp-lite -e OMNIROUTE_API_KEY=sk-… -- bunx omniroute-mcp-lite
+claude mcp add omniroute-mcp-lite -e OMNIROUTE_API_KEY=sk-… -- bunx omniroute-mcp-lite@latest
 ```
 
 **Cursor / any `.mcp.json`-aware client**
@@ -98,7 +91,7 @@ claude mcp add omniroute-mcp-lite -e OMNIROUTE_API_KEY=sk-… -- bunx omniroute-
   "mcpServers": {
     "omniroute-mcp-lite": {
       "command": "bunx",
-      "args": ["omniroute-mcp-lite"]
+      "args": ["omniroute-mcp-lite@latest"]
     }
   }
 }
