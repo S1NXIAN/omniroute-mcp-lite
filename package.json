@@ -1,9 +1,11 @@
 {
   "name": "omniroute-mcp-lite",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Thin zero-dependency stdio MCP proxy exposing only OmniRoute's web_search + web_fetch tools (keeps agent context at ~630 tokens instead of 14k).",
   "type": "commonjs",
-  "bin": { "omniroute-mcp-lite": "./omniroute-mcp-lite" },
+  "bin": {
+    "omniroute-mcp-lite": "./omniroute-mcp-lite"
+  },
   "files": [
     "omniroute-mcp-lite",
     "README.md"
