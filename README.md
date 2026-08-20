@@ -46,7 +46,7 @@ have `OMNIROUTE_API_KEY` available (exported, or loaded via the harness's `.env`
 ## Register with your agent
 
 The server is plain stdio MCP, so any MCP-aware client can launch it. The command
-is `bunx omniroute-mcp-lite` (or `bun /path/to/omniroute-mcp-lite.js`).
+is `bunx omniroute-mcp-lite` (or `bun /path/to/omniroute-mcp-lite`).
 
 **OpenCode**
 
